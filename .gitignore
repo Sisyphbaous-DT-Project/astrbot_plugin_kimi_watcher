@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# 打包产物
+*.zip
+*.tar.gz
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

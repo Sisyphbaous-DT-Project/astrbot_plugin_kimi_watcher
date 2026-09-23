@@ -1,0 +1,50 @@
+{
+  "targets": {
+    "description": "通知目标（UMO 列表，必填）",
+    "type": "list",
+    "hint": "格式 platform:type:session_id，例如 default:FriendMessage:100000000。不填则不会发送任何通知",
+    "default": []
+  },
+  "interval_seconds": {
+    "description": "检查间隔（秒）",
+    "type": "int",
+    "hint": "默认 60 秒，最小 15 秒",
+    "default": 60
+  },
+  "kimi_code_enable": {
+    "description": "启用 Kimi Code 模型监测",
+    "type": "bool",
+    "hint": "开启并填写 Key 后，每分钟检查 Kimi Code 模型列表的变化",
+    "default": true
+  },
+  "kimi_code_base_url": {
+    "description": "Kimi Code 接口地址",
+    "type": "string",
+    "hint": "默认 https://api.kimi.com/coding",
+    "default": "https://api.kimi.com/coding"
+  },
+  "kimi_code_key": {
+    "description": "Kimi Code API Key（自己填）",
+    "type": "string",
+    "hint": "形如 sk-kimi-xxx；不填则跳过 Kimi Code 监测",
+    "default": ""
+  },
+  "moonshot_enable": {
+    "description": "启用 Moonshot 官方模型监测",
+    "type": "bool",
+    "hint": "开启并填写 Key 后，每分钟检查 api.moonshot.cn 的模型列表变化",
+    "default": true
+  },
+  "moonshot_base_url": {
+    "description": "Moonshot 官方接口地址",
+    "type": "string",
+    "hint": "默认 https://api.moonshot.cn/v1",
+    "default": "https://api.moonshot.cn/v1"
+  },
+  "moonshot_key": {
+    "description": "Moonshot 官方 API Key（自己填）",
+    "type": "string",
+    "hint": "形如 sk-xxx；不填则跳过 Moonshot 官方监测",
+    "default": ""
+  }
+}

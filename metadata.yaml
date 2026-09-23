@@ -1,0 +1,6 @@
+name: astrbot_plugin_kimi_watcher
+desc: Kimi 模型雷达：每分钟监控 kimi.com 模型菜单、Kimi Code 与 Moonshot 官方模型列表，任何字段变化即 QQ 通知
+author: Sisyphbaous-DT-Project
+version: 1.6.0
+display_name: Kimi 模型雷达
+astrbot_version: ">=4.5.7"
