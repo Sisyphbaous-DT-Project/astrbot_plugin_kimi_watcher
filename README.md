@@ -17,6 +17,7 @@
 - Kimi Code / Moonshot 官方需在配置中填写 API Key；填好后第一次成功拉取会发送"监测已就绪"通知
 - 接口异常时跳过本轮（不更新快照、不误报）；kimi.com 连续失败 10 次发一次提醒，恢复后另行通知
 - 额外数据源（Kimi Code / Moonshot 官方）连续失败 5 次单独提醒一次，恢复后再通知一次，不会静默失明
+- 通知分两路：运维提醒（`targets`）发插件上线重载与数据源失败恢复，变化提醒（`change_targets`）发模型增删与字段变动，两者可指向不同会话；`change_targets` 留空时回落 `targets`
 - 场景响应的顶层全局字段（defaultScenario / defaultAgentModel / defaultChatModel 等）同样纳入对比
 - 长文本字段变化采用"差异聚焦"显示，只展示变化附近的文字（超过 80 字符的文本会裁掉公共部分）
 - 模型标识变更（显示名不变）合并为字段变化：`Instant 的标识：k2d6 变为 k2d8`
@@ -25,7 +26,8 @@
 
 | 配置项 | 说明 |
 | --- | --- |
-| `targets` | 通知目标 UMO 列表（必填）：格式 `platform:type:session_id`，例如 `default:FriendMessage:100000000`；不填则不会发送通知 |
+| `targets` | 运维提醒目标 UMO 列表（必填）：插件上线重载、数据源失败与恢复等雷达自身状态发到这里。格式 `platform:type:session_id`，例如 `default:FriendMessage:100000000`；不填则不会发送通知 |
+| `change_targets` | 变化提醒目标 UMO 列表：模型增删、字段变动、新数据源建立基线发到这里，可与运维提醒分开放不同会话；留空则回落到 `targets` |
 | `interval_seconds` | 检查间隔（秒），默认 60，最小 15 |
 | `kimi_code_enable` | 是否监测 Kimi Code，默认开启 |
 | `kimi_code_base_url` | Kimi Code 接口地址，默认 `https://api.kimi.com/coding` |
@@ -35,6 +37,12 @@
 | `moonshot_key` | Moonshot 官方 API Key（自己填，形如 `sk-xxx`）；不填则跳过 Moonshot 官方监测 |
 
 ## 更新记录
+
+### v1.7.0 (2026-09-26)
+
+- 新增配置项 `change_targets`：通知目标拆分为两路，运维提醒（`targets`）与变化提醒（`change_targets`）可发送到不同会话
+- 变化提醒覆盖：模型增删、字段变动、新数据源建立基线；运维提醒覆盖：插件上线重载、数据源连续失败与恢复
+- `change_targets` 留空时自动回落到 `targets`，旧配置升级后行为不变、不会漏消息
 
 ### v1.6.0 (2026-09-23)
 

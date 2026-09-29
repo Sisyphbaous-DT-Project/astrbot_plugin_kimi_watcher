@@ -11,6 +11,11 @@
 逐模型逐字段深比较，发现任何变化（新增 / 移除 / 字段修改 / 字段增删）
 即通过配置的 UMO 发送消息。快照持久化在插件数据目录，重启不丢。
 额外数据源连续失败达到阈值时会单独提醒，恢复后再通知一次，避免静默失明。
+
+通知分两路：
+- 运维提醒（targets）：插件上线重载、数据源失败恢复等雷达自身状态
+- 变化提醒（change_targets）：模型增删、字段变动、新数据源建立基线；
+  未配置时回落到 targets，保证旧版本升级后不漏消息
 """
 
 from __future__ import annotations
@@ -247,10 +252,10 @@ class KimiWatcherPlugin(Star):
         if baseline_ready or changes:
             self._save_snapshot(scenes_models, fetched)
         for label, models in baseline_ready:
-            await self._notify(build_source_ready_message(label, models))
+            await self._notify_change(build_source_ready_message(label, models))
             logger.info("[KimiWatcher] %s 基线已建立（%d 个模型）", label, len(models))
         if changes:
-            await self._notify(build_change_message(changes))
+            await self._notify_change(build_change_message(changes))
             logger.info("[KimiWatcher] 检测到变化并已通知: %s", " / ".join(changes))
         else:
             logger.debug("[KimiWatcher] 检查完成，无变化")
@@ -340,16 +345,36 @@ class KimiWatcherPlugin(Star):
 
     # ---------------- 通知 ----------------
 
+    @staticmethod
+    def _read_targets(value):
+        if isinstance(value, str):
+            value = [value]
+        return [str(item) for item in (value or []) if str(item).strip()]
+
     async def _notify(self, text: str) -> None:
-        targets = self.config.get("targets") or []
-        if isinstance(targets, str):
-            targets = [targets]
+        """运维提醒：雷达自身状态（上线重载、数据源失败恢复）。"""
+        targets = self._read_targets(self.config.get("targets"))
+        await self._dispatch(text, targets, "运维提醒（targets）")
+
+    async def _notify_change(self, text: str) -> None:
+        """变化提醒：模型增删、字段变动、新数据源建立基线。
+
+        change_targets 未配置时回落到 targets，保证升级后不漏消息。
+        """
+        targets = self._read_targets(self.config.get("change_targets"))
+        label = "变化提醒（change_targets）"
         if not targets:
-            logger.warning("[KimiWatcher] 未配置通知目标（targets），本次通知跳过")
+            targets = self._read_targets(self.config.get("targets"))
+            label = "变化提醒（回落到 targets）"
+        await self._dispatch(text, targets, label)
+
+    async def _dispatch(self, text: str, targets: list, label: str) -> None:
+        if not targets:
+            logger.warning(f"[KimiWatcher] 未配置通知目标（{label}），本次通知跳过")
             return
         for target in targets:
             for chunk in split_message(text):
-                ok = await self._send_with_retry(str(target), chunk)
+                ok = await self._send_with_retry(target, chunk)
                 if not ok:
                     logger.warning(f"[KimiWatcher] 通知发送失败（目标 {target}）")
 
