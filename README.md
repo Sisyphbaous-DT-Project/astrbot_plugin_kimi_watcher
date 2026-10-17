@@ -31,6 +31,7 @@
 - 菜单里的「更多模型」折叠入口（响应里的 `moreModels`，Kimi 安卓 3.1.4 起客户端支持，结构与主列表 `availableModels` 相同）与主列表合并后按模型比较：模型在主列表与「更多模型」之间挪动显示为 `所在列表` 的变化，不会误报成移除 + 新增；「更多模型」里新增 / 移除的模型会注明「在「更多模型」里」；上线通知里这类模型后面标注（更多模型）。截至 2026-10-17 服务端尚未返回该字段
 - 长文本字段变化采用"差异聚焦"显示，只展示变化附近的文字（超过 80 字符的文本会裁掉公共部分）
 - 模型标识变更（显示名不变）合并为字段变化：`Instant 的标识：k2d6 变为 k2d8`
+- Kimi Code / DeepSeek 官方的模型以接口名（id）为主要称呼，官方另给的标注名放在括号里，例如 `kimi-for-coding（官方名 K2.8 Preview）`、`deepseek-flash（官方名 DeepSeek-V4.1-Flash）`；标注名与 id 只差大小写时不加括号（如 `k3`）。标注名只是官方贴的标签，不一定随后端版本变化（DeepSeek 在 2026-10-17 更换后端时名称就没变），真实版本变化以后端指纹为准。上线通知里括号内依次是官方名和后端指纹
 
 ## 配置
 
@@ -53,6 +54,13 @@
 | `deepseek_key` | DeepSeek 官方 API Key（自己填，形如 `sk-xxx`）；不填则跳过 DeepSeek 官方监测 |
 
 ## 更新记录
+
+### v1.8.2 (2026-10-17)
+
+- Kimi Code / DeepSeek 官方的模型称呼改为「id（官方名 X）」：此前 Kimi Code 只显示官方名（如 K2.8 Preview，看不出对应的接口名 `kimi-for-coding`），DeepSeek 只显示 id（看不到官方给的 `DeepSeek-V4.1-Flash`）；现在两家统一以 id 为主，官方名放括号里
+- 适用于上线通知、监测已就绪通知、新增 / 移除模型、字段变化的前缀；上线通知的括号里依次放官方名和后端指纹，例如 `kimi-for-coding（官方名 K2.8 Preview，fpv0_a3373eb3）`
+- 官方名与 id 只差大小写时省略括号（`k3`、`deepseek-v4-pro`）；新增 / 移除消息里的称呼已包含 id，不再重复写「标识」
+- 仅调整显示，不改变比较逻辑与快照内容，升级后不会产生误报；kimi.com 菜单与 Moonshot 官方的输出与 v1.8.1 完全一致
 
 ### v1.8.1 (2026-10-17)
 
@@ -125,6 +133,7 @@
 - 方法：对每个字段逐个篡改（文本加后缀、布尔取反等），记录插件会发出的提示
 - 结果：kimi.com 主菜单 62 个 + Agent 菜单 83 个字段实例；Kimi Code 59 个；Moonshot 官方 72 个；接口顶层全局字段 4 个；DeepSeek 官方 29 个（含后端指纹）；合计 309 个，全部检出（0 漏检）
 - 说明：示例中的"（改）"为测试时加的篡改标记
+- 注：v1.8.2 起 Kimi Code / DeepSeek 的模型称呼写成 `id（官方名 X）`，下面「二、Kimi Code」「四、DeepSeek 官方」两节的样例仍是旧写法（仅模型称呼部分不同），新写法见「六」
 
 ### 一、kimi.com 模型菜单
 
@@ -947,6 +956,35 @@ Kimi 安卓 3.1.4 起，模型菜单接口的响应里除了主列表 `available
 - 上线通知：
 
   主菜单 4 个：K3、K2.8、Instant、K3.1 Preview（更多模型）
+
+### 六、Kimi Code / DeepSeek 的模型称呼（v1.8.2）
+
+以下样例由真实接口数据逐项构造变化后生成。
+
+- 上线通知：
+
+  Kimi Code 4 个：kimi-for-coding（官方名 K2.8 Preview，fpv0_a3373eb3）、kimi-for-coding-highspeed（官方名 K2.7 Code Highspeed，fpv0_ab14226c）、k3（fpv0_57ea5778）、k3-256k（fpv0_57ea5778）
+  DeepSeek 官方 2 个：deepseek-flash（官方名 DeepSeek-V4.1-Flash，e72d3c7f663d3e1383b00b3884cb4501）、deepseek-v4-pro（a307abda487cd1b463329ccb945ce396）
+
+- 字段变化：
+
+  kimi-for-coding（官方名 K2.8 Preview） 的上下文长度：1048576 变为 999999
+  deepseek-flash（官方名 DeepSeek-V4.1-Flash） 的后端指纹：e72d3c7f663d3e1383b00b3884cb4501 变为 ffffffffffffffffffffffffffffffff
+
+- 官方名变化：
+
+  kimi-for-coding（官方名 K3.1） 的显示名：K2.8 Preview 变为 K3.1
+  deepseek-flash（官方名 DeepSeek-V4.2-Flash） 的名称：DeepSeek-V4.1-Flash 变为 DeepSeek-V4.2-Flash
+
+- 新增 / 移除模型：
+
+  新增模型：kimi-new（官方名 K9）
+  新增模型：deepseek-v4.1-flash-1017（官方名 DeepSeek V4.1 Flash 1017）
+  移除模型：kimi-for-coding（官方名 K2.8 Preview）
+
+- 官方名与 id 只差大小写时省略括号：
+
+  新增模型：kimi-new
 
 ## 备注
 

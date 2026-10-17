@@ -1,6 +1,6 @@
 name: astrbot_plugin_kimi_watcher
 desc: 模型雷达：每分钟监控 kimi.com 模型菜单、Kimi Code、Moonshot 与 DeepSeek 官方模型列表（含三家后端指纹），任何字段变化即 QQ 通知
 author: Sisyphbaous-DT-Project
-version: 1.8.1
+version: 1.8.2
 display_name: 模型雷达
 astrbot_version: ">=4.5.7"

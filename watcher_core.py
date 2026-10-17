@@ -30,6 +30,8 @@ MORE_LIST_FIELD = "moreModels"
 LIST_POSITION_FIELD = "所在列表"
 LIST_MAIN = "主列表"
 LIST_MORE = "更多模型"
+# Kimi Code / DeepSeek 的模型称呼里，官方标注名前面的说明词
+OFFICIAL_NAME_LABEL = "官方名"
 
 # 接口字段 -> 中文名（用于变化消息里更好读）
 FIELD_NAMES = {
@@ -124,6 +126,43 @@ def model_display_name(model):
     return model_key(model)
 
 
+def _id_style(model):
+    """是否为「id 即接口名、另有官方标注名」的模型：Kimi Code（display_name）、DeepSeek（name）。
+
+    kimi.com 菜单的模型自带 displayName，以显示名为主，不算；Moonshot 官方没有标注名，也不算。
+    """
+    return (
+        bool(model.get("id"))
+        and not model.get("displayName")
+        and bool(model.get("display_name") or model.get("name"))
+    )
+
+
+def official_name(model):
+    """id 之外官方另给的标注名；不是 id 风格的模型，或标注名与 id 只差大小写时返回 None。"""
+    if not _id_style(model):
+        return None
+    for field in ("display_name", "name"):
+        value = model.get(field)
+        if value and str(value).lower() != str(model["id"]).lower():
+            return str(value)
+    return None
+
+
+def model_title(model):
+    """通知里的模型称呼。
+
+    Kimi Code / DeepSeek 以 id 为主，标注名不同时补在括号里，例如 kimi-for-coding（官方名 K2.8 Preview）；
+    标注名只是后端标签，不一定随后端版本变化，真实版本以后端指纹为准。其余模型沿用展示名 / 标识。
+    """
+    if not _id_style(model):
+        return model_display_name(model)
+    official = official_name(model)
+    if official:
+        return "%s（%s %s）" % (model["id"], OFFICIAL_NAME_LABEL, official)
+    return str(model["id"])
+
+
 def _position_note(model):
     """模型在「更多模型」里时，新增/移除消息里补一句位置；其余情况为空。"""
     if model.get(LIST_POSITION_FIELD) == LIST_MORE:
@@ -140,12 +179,22 @@ def scene_model_label(model):
 
 
 def model_label(model):
-    """展示名；已探测到后端指纹的模型后面带上指纹，例如 K3（fpv0_57ea5778）。"""
-    name = model_display_name(model)
+    """上线消息里的模型称呼：模型名后面的括号里放官方名和后端指纹（有哪个放哪个）。
+
+    例如 kimi-for-coding（官方名 K2.8 Preview，fpv0_a3373eb3）、k3（fpv0_57ea5778）。
+    """
+    notes = []
+    if _id_style(model):
+        name = str(model["id"])
+        official = official_name(model)
+        if official:
+            notes.append("%s %s" % (OFFICIAL_NAME_LABEL, official))
+    else:
+        name = model_display_name(model)
     fingerprint = model.get("system_fingerprint")
     if fingerprint:
-        return "%s（%s）" % (name, fingerprint)
-    return name
+        notes.append(str(fingerprint))
+    return "%s（%s）" % (name, "，".join(notes)) if notes else name
 
 
 def models_url(base_url):
@@ -278,6 +327,13 @@ def _compare_fields(old_model, new_model, display, skip=()):
     return details
 
 
+def _model_entry(model, key):
+    """新增 / 移除消息里的模型描述。id 风格的称呼里已有 id，不再重复写标识。"""
+    if _id_style(model):
+        return model_title(model)
+    return "%s（标识 %s%s）" % (model_display_name(model), key, _position_note(model))
+
+
 def diff_models(old_models, new_models):
     """逐个模型逐字段比较，返回人类可读的变化行列表。"""
     old_by_key = {model_key(m): m for m in old_models}
@@ -304,32 +360,34 @@ def diff_models(old_models, new_models):
         new_key, new_model = match
         paired_old.add(old_key)
         paired_new.add(new_key)
-        details = ["  %s 的标识：%s 变为 %s" % (name, old_key, new_key)]
-        details.extend(_compare_fields(old_model, new_model, name, skip=("key",)))
+        label = model_title(new_model) if _id_style(new_model) else name
+        details = ["  %s 的标识：%s 变为 %s" % (label, old_key, new_key)]
+        details.extend(_compare_fields(old_model, new_model, label, skip=("key",)))
         lines.append("字段变化：")
         lines.extend(details)
 
     for key, model in added:
         if key in paired_new:
             continue
-        lines.append(
-            "新增模型：%s（标识 %s%s）" % (model_display_name(model), key, _position_note(model))
-        )
+        lines.append("新增模型：" + _model_entry(model, key))
     for key, model in removed:
         if key in paired_old:
             continue
-        lines.append(
-            "移除模型：%s（标识 %s%s）" % (model_display_name(model), key, _position_note(model))
-        )
+        lines.append("移除模型：" + _model_entry(model, key))
 
     for key in new_by_key:
         if key not in old_by_key:
             continue
         old_model, new_model = old_by_key[key], new_by_key[key]
-        display = (
-            new_model.get("displayName") or new_model.get("display_name")
-            or old_model.get("displayName") or old_model.get("display_name") or key
-        )
+        if _id_style(new_model):
+            display = model_title(new_model)
+        elif _id_style(old_model):
+            display = model_title(old_model)
+        else:
+            display = (
+                new_model.get("displayName") or new_model.get("display_name")
+                or old_model.get("displayName") or old_model.get("display_name") or key
+            )
         details = _compare_fields(old_model, new_model, display)
         if details:
             lines.append("字段变化：")
@@ -419,7 +477,7 @@ def build_online_message(scenes_models, first, saved_at=None, now=None, extra_so
 def build_source_ready_message(label, models, now=None):
     """某个数据源的基线建立完成通知（填好 Key 后第一次成功拉取时发送）。"""
     now = now or datetime.now()
-    names = "、".join(model_display_name(m) for m in models) or "（空）"
+    names = "、".join(model_title(m) for m in models) or "（空）"
     return (
         "%s 模型监测已就绪（%s）\n\n"
         "当前 %d 个模型：%s\n"
