@@ -1,10 +1,13 @@
-# Kimi 模型雷达（astrbot_plugin_kimi_watcher）
+# 模型雷达（astrbot_plugin_kimi_watcher）
 
-每分钟监控模型列表的字段变化并推送通知，覆盖三个监测源：
+每分钟监控模型列表的字段变化并推送通知，覆盖四个监测源：
 
 - kimi.com 模型菜单（GetAvailableModels 的 scene=0 主菜单 / scene=1 Agent 菜单）
 - Kimi Code 模型列表（GET {base_url}/v1/models，需在配置中填写 API Key）
 - Moonshot 官方模型列表（GET https://api.moonshot.cn/v1/models，需在配置中填写 API Key）
+- DeepSeek 官方模型列表（GET https://api.deepseek.com/v1/models，需在配置中填写 API Key）
+
+后三个官方接口（Kimi Code / Moonshot / DeepSeek）还会探测聊天回复里的后端指纹 `system_fingerprint`，作为模型字段一起参与对比。
 
 对每个模型的**所有字段**做逐项深比较，发现任何变化（新增 / 移除 / 字段修改 / 字段增删）
 即通过 QQ 发送一条汇总通知。
@@ -14,9 +17,15 @@
 - 插件激活后启动后台任务，默认每 60 秒拉取一次接口
 - 快照保存在 `data/plugin_data/astrbot_plugin_kimi_watcher/snapshot.json`，重载 / 重启不丢
 - 首次运行只建立基线（不误报），并发送一条"已上线"通知
-- Kimi Code / Moonshot 官方需在配置中填写 API Key；填好后第一次成功拉取会发送"监测已就绪"通知
+- "已上线 / 已重载上线"通知里，Kimi Code / Moonshot 官方 / DeepSeek 官方的每个模型名后面带当前后端指纹（括号内），例如 `K3（fpv0_57ea5778）`，重载后可以直接确认指纹有没有读到
+- Kimi Code / Moonshot 官方 / DeepSeek 官方需在配置中填写 API Key；填好后第一次成功拉取会发送"监测已就绪"通知
 - 接口异常时跳过本轮（不更新快照、不误报）；kimi.com 连续失败 10 次发一次提醒，恢复后另行通知
-- 额外数据源（Kimi Code / Moonshot 官方）连续失败 5 次单独提醒一次，恢复后再通知一次，不会静默失明
+- 额外数据源（Kimi Code / Moonshot 官方 / DeepSeek 官方）连续失败 5 次单独提醒一次，恢复后再通知一次，不会静默失明
+- 后端指纹（Kimi Code / Moonshot / DeepSeek）要发一条极小的聊天请求（`max_tokens` 为 1）才能读到：Moonshot、DeepSeek 会产生少量费用，Kimi Code 会占一点订阅额度，所以和免费的模型列表分开计时：列表跟随检查间隔，指纹按各自的间隔探测（Kimi Code 用 `kimi_code_fingerprint_interval_seconds`，默认 300 秒；Moonshot 用 `moonshot_fingerprint_interval_seconds`，默认 600 秒；DeepSeek 用 `deepseek_fingerprint_interval_seconds`，默认 300 秒；填 0 关闭；各数据源独立计时）
+- Kimi 只有流式回复才带 `system_fingerprint`（非流式没有），DeepSeek 两种都带，所以探测统一走流式，读到第一段带指纹的内容就断开
+- 没到探测时间、探测失败或回复里缺该字段时，沿用上一轮快照里的指纹值，不会被误报成"字段被删除"；新出现的模型不等间隔，立即探测一次
+- 升级前已经建好基线的数据源（快照里还没有指纹），第一次读到指纹时静默并入基线，不会把每个模型的指纹都报成"新增字段"
+- 后端指纹对应的是后端部署而不是模型名（实测 Moonshot 的 kimi-k3 与 Kimi Code 的 k3 / k3-256k 指纹相同）；指纹变化只代表后端配置有变动，不直接证明模型升级
 - 通知分两路：运维提醒（`targets`）发插件上线重载与数据源失败恢复，变化提醒（`change_targets`）发模型增删与字段变动，两者可指向不同会话；`change_targets` 留空时回落 `targets`
 - 场景响应的顶层全局字段（defaultScenario / defaultAgentModel / defaultChatModel 等）同样纳入对比
 - 长文本字段变化采用"差异聚焦"显示，只展示变化附近的文字（超过 80 字符的文本会裁掉公共部分）
@@ -28,15 +37,31 @@
 | --- | --- |
 | `targets` | 运维提醒目标 UMO 列表（必填）：插件上线重载、数据源失败与恢复等雷达自身状态发到这里。格式 `platform:type:session_id`，例如 `default:FriendMessage:100000000`；不填则不会发送通知 |
 | `change_targets` | 变化提醒目标 UMO 列表：模型增删、字段变动、新数据源建立基线发到这里，可与运维提醒分开放不同会话；留空则回落到 `targets` |
-| `interval_seconds` | 检查间隔（秒），默认 60，最小 15 |
+| `interval_seconds` | 检查间隔（秒），默认 60，最小 15；只管模型列表的拉取（不花钱） |
+| `kimi_code_fingerprint_interval_seconds` | Kimi Code 后端指纹探测间隔（秒），默认 300，最小 60，填 0 关闭 Kimi Code 的指纹探测（模型列表监测不受影响）；会占订阅额度 |
+| `moonshot_fingerprint_interval_seconds` | Moonshot 官方后端指纹探测间隔（秒），默认 600，最小 60，填 0 关闭 Moonshot 的指纹探测（模型列表监测不受影响）；会产生少量费用 |
+| `deepseek_fingerprint_interval_seconds` | DeepSeek 后端指纹探测间隔（秒），默认 300，最小 60，填 0 关闭 DeepSeek 的指纹探测（模型列表监测不受影响）；会产生少量费用 |
 | `kimi_code_enable` | 是否监测 Kimi Code，默认开启 |
 | `kimi_code_base_url` | Kimi Code 接口地址，默认 `https://api.kimi.com/coding` |
 | `kimi_code_key` | Kimi Code API Key（自己填，形如 `sk-kimi-xxx`）；不填则跳过 Kimi Code 监测 |
 | `moonshot_enable` | 是否监测 Moonshot 官方模型列表，默认开启 |
 | `moonshot_base_url` | Moonshot 官方接口地址，默认 `https://api.moonshot.cn/v1` |
 | `moonshot_key` | Moonshot 官方 API Key（自己填，形如 `sk-xxx`）；不填则跳过 Moonshot 官方监测 |
+| `deepseek_enable` | 是否监测 DeepSeek 官方模型列表，默认开启 |
+| `deepseek_base_url` | DeepSeek 官方接口地址，默认 `https://api.deepseek.com` |
+| `deepseek_key` | DeepSeek 官方 API Key（自己填，形如 `sk-xxx`）；不填则跳过 DeepSeek 官方监测 |
 
 ## 更新记录
+
+### v1.8.0 (2026-10-17)
+
+- 新增 DeepSeek 官方模型列表监测（GET /v1/models，全字段对比）：模型 id、名称、归属方、上下文窗口、最大输出、输入 / 输出类型、思考档位、Anthropic 协议能力等字段的变化都会通知
+- 新增后端指纹 `system_fingerprint` 监测，覆盖 Kimi Code / Moonshot / DeepSeek 三家：向每个模型发一条极小的流式聊天请求读取（Kimi 只有流式回复才带该字段），作为模型字段参与对比；与模型列表分开计时，Kimi Code 默认每 300 秒一次、Moonshot 默认每 600 秒一次、DeepSeek 默认每 300 秒一次，可在设置页分别修改，填 0 关闭
+- 新增配置项 `deepseek_enable` / `deepseek_base_url` / `deepseek_key`（Key 由使用者自行填写，插件不内置任何凭据），以及三家各自的指纹探测间隔 `kimi_code_fingerprint_interval_seconds` / `moonshot_fingerprint_interval_seconds` / `deepseek_fingerprint_interval_seconds`
+- 指纹探测失败、未到探测时间时沿用上一轮的值，不误报；新模型立即探测一次；升级前已建基线的数据源第一次读到指纹时静默并入基线，不会报"新增字段"
+- "已上线 / 已重载上线"通知里，三家官方数据源的每个模型名后面带上当前后端指纹
+- 通知标题与插件显示名去掉"Kimi"，改为"模型有新变化""模型雷达"，覆盖四个监测源
+- DeepSeek 官方首次建立基线时发送"监测已就绪"通知
 
 ### v1.7.0 (2026-09-26)
 
@@ -88,9 +113,9 @@
 
 ## 字段覆盖与提示样例
 
-- 数据：真实接口数据（kimi.com 模型菜单 + Kimi Code 模型列表 + Moonshot 官方模型列表）
+- 数据：真实接口数据（kimi.com 模型菜单 + Kimi Code 模型列表 + Moonshot 官方模型列表 + DeepSeek 官方模型列表及探测到的后端指纹）
 - 方法：对每个字段逐个篡改（文本加后缀、布尔取反等），记录插件会发出的提示
-- 结果：kimi.com 主菜单 62 个 + Agent 菜单 83 个字段实例；Kimi Code 59 个；Moonshot 官方 72 个；接口顶层全局字段 4 个；合计 280 个，全部检出（0 漏检）
+- 结果：kimi.com 主菜单 62 个 + Agent 菜单 83 个字段实例；Kimi Code 59 个；Moonshot 官方 72 个；接口顶层全局字段 4 个；DeepSeek 官方 29 个（含后端指纹）；合计 309 个，全部检出（0 漏检）
 - 说明：示例中的"（改）"为测试时加的篡改标记
 
 ### 一、kimi.com 模型菜单
@@ -763,6 +788,129 @@
 - kimi-k2.7-code-highspeed 的支持推理：是 变为 否
 - kimi-k2.7-code-highspeed 的支持视频输入：是 变为 否
 
+### 四、DeepSeek 官方模型列表
+
+说明：`system_fingerprint`（后端指纹）不在 `/models` 里，是插件按单独间隔向每个模型发一条极小的聊天请求、从回复里读出后写进模型对象的，之后和其他字段一起参与对比。Kimi Code 与 Moonshot 官方的每个模型同样多出这一项，提示样式与下面的 DeepSeek 示例一致（例如：`k3 的后端指纹：fpv0_57ea5778 变为 fpv0_57ea5778（改）`）。
+
+#### 按字段类型（每类一个例子）
+
+1. **api_capabilities.anthropic_messages.system_prompt_update**（2 处）
+
+   示例（DeepSeek 官方 · deepseek-flash）：
+   deepseek-flash 的 API 能力.Anthropic 协议.system 提示更新方式：in-history 变为 in-history（改）
+
+2. **context_window**（2 处）
+
+   示例（DeepSeek 官方 · deepseek-flash）：
+   deepseek-flash 的上下文窗口：1048576 变为 1048577
+
+3. **effort.default_level**（2 处）
+
+   示例（DeepSeek 官方 · deepseek-flash）：
+   deepseek-flash 的档位.默认档位：high 变为 high（改）
+
+4. **effort.supported_levels[0]**（2 处）
+
+   示例（DeepSeek 官方 · deepseek-flash）：
+   deepseek-flash 的档位.支持档位[0]：low 变为 low（改）
+
+5. **effort.supported_levels[1]**（2 处）
+
+   示例（DeepSeek 官方 · deepseek-flash）：
+   deepseek-flash 的档位.支持档位[1]：high 变为 high（改）
+
+6. **effort.supported_levels[2]**（2 处）
+
+   示例（DeepSeek 官方 · deepseek-flash）：
+   deepseek-flash 的档位.支持档位[2]：max 变为 max（改）
+
+7. **id**（2 处）
+
+   示例（DeepSeek 官方 · deepseek-flash）：
+   新增模型：deepseek-flash（改）（标识 deepseek-flash（改））
+   移除模型：deepseek-flash（标识 deepseek-flash）
+
+8. **input_modalities[0]**（2 处）
+
+   示例（DeepSeek 官方 · deepseek-flash）：
+   deepseek-flash 的输入类型[0]：text 变为 text（改）
+
+9. **input_modalities[1]**（1 处）
+
+   示例（DeepSeek 官方 · deepseek-flash）：
+   deepseek-flash 的输入类型[1]：image 变为 image（改）
+
+10. **max_output_tokens**（2 处）
+
+   示例（DeepSeek 官方 · deepseek-flash）：
+   deepseek-flash 的最大输出：393216 变为 393217
+
+11. **name**（2 处）
+
+   示例（DeepSeek 官方 · deepseek-flash）：
+   deepseek-flash 的名称：DeepSeek-V4.1-Flash 变为 DeepSeek-V4.1-Flash（改）
+
+12. **object**（2 处）
+
+   示例（DeepSeek 官方 · deepseek-flash）：
+   deepseek-flash 的对象类型：model 变为 model（改）
+
+13. **output_modalities[0]**（2 处）
+
+   示例（DeepSeek 官方 · deepseek-flash）：
+   deepseek-flash 的输出类型[0]：text 变为 text（改）
+
+14. **owned_by**（2 处）
+
+   示例（DeepSeek 官方 · deepseek-flash）：
+   deepseek-flash 的归属方：deepseek 变为 deepseek（改）
+
+15. **system_fingerprint**（2 处）
+
+   示例（DeepSeek 官方 · deepseek-flash）：
+   deepseek-flash 的后端指纹：e72d3c7f663d3e1383b00b3884cb4501 变为 e72d3c7f663d3e1383b00b3884cb4501（改）
+
+#### 全部实例（按模型分组）
+
+##### DeepSeek 官方 · deepseek-flash（15 个字段）
+
+- deepseek-flash 的 API 能力.Anthropic 协议.system 提示更新方式：in-history 变为 in-history（改）
+- deepseek-flash 的上下文窗口：1048576 变为 1048577
+- deepseek-flash 的档位.默认档位：high 变为 high（改）
+- deepseek-flash 的档位.支持档位[0]：low 变为 low（改）
+- deepseek-flash 的档位.支持档位[1]：high 变为 high（改）
+- deepseek-flash 的档位.支持档位[2]：max 变为 max（改）
+- 新增模型：deepseek-flash（改）（标识 deepseek-flash（改））
+- 移除模型：deepseek-flash（标识 deepseek-flash）
+- deepseek-flash 的输入类型[0]：text 变为 text（改）
+- deepseek-flash 的输入类型[1]：image 变为 image（改）
+- deepseek-flash 的最大输出：393216 变为 393217
+- deepseek-flash 的名称：DeepSeek-V4.1-Flash 变为 DeepSeek-V4.1-Flash（改）
+- deepseek-flash 的对象类型：model 变为 model（改）
+- deepseek-flash 的输出类型[0]：text 变为 text（改）
+- deepseek-flash 的归属方：deepseek 变为 deepseek（改）
+- deepseek-flash 的后端指纹：e72d3c7f663d3e1383b00b3884cb4501 变为 e72d3c7f663d3e1383b00b3884cb4501（改）
+
+##### DeepSeek 官方 · deepseek-v4-pro（14 个字段）
+
+- deepseek-v4-pro 的 API 能力.Anthropic 协议.system 提示更新方式：leading-only 变为 leading-only（改）
+- deepseek-v4-pro 的上下文窗口：1048576 变为 1048577
+- deepseek-v4-pro 的档位.默认档位：high 变为 high（改）
+- deepseek-v4-pro 的档位.支持档位[0]：low 变为 low（改）
+- deepseek-v4-pro 的档位.支持档位[1]：high 变为 high（改）
+- deepseek-v4-pro 的档位.支持档位[2]：max 变为 max（改）
+- 新增模型：deepseek-v4-pro（改）（标识 deepseek-v4-pro（改））
+- 移除模型：deepseek-v4-pro（标识 deepseek-v4-pro）
+- deepseek-v4-pro 的输入类型[0]：text 变为 text（改）
+- deepseek-v4-pro 的最大输出：393216 变为 393217
+- deepseek-v4-pro 的名称：DeepSeek-V4-Pro 变为 DeepSeek-V4-Pro（改）
+- deepseek-v4-pro 的对象类型：model 变为 model（改）
+- deepseek-v4-pro 的输出类型[0]：text 变为 text（改）
+- deepseek-v4-pro 的归属方：deepseek 变为 deepseek（改）
+- deepseek-v4-pro 的后端指纹：a307abda487cd1b463329ccb945ce396 变为 a307abda487cd1b463329ccb945ce396（改）
+
 ## 备注
 
-监测对象为服务器所在网络视角下的 kimi.com 接口，以及所配置的 Kimi Code 接口（Key 自备）。
+监测对象为服务器所在网络视角下的 kimi.com 接口，以及所配置的 Kimi Code、Moonshot、DeepSeek 官方接口（Key 自备）。
+
+各官方接口只能看到所配置 Key 可见的模型列表。

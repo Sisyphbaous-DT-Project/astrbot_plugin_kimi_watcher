@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Kimi 模型雷达：每分钟监控模型列表的字段变化并推送通知。
+"""模型雷达：每分钟监控模型列表的字段变化并推送通知。
 
 监控源：
 - kimi.com 模型菜单（GetAvailableModels 的 scene=0 主菜单 / scene=1 Agent 菜单）
@@ -7,6 +7,13 @@
   defaultChatModel 等）也纳入对比
 - Kimi Code 模型列表（GET {base_url}/v1/models，需在配置中填写 API Key）
 - Moonshot 官方模型列表（GET https://api.moonshot.cn/v1/models，需在配置中填写 API Key）
+- DeepSeek 官方模型列表（GET https://api.deepseek.com/v1/models，需在配置中填写 API Key）
+
+三家额外数据源（Kimi Code / Moonshot / DeepSeek）的聊天回复里还带后端指纹 system_fingerprint，
+它不在模型列表里，要发一条极小的流式聊天请求才读得到（会产生少量费用，Kimi Code 占订阅额度），
+所以每家按各自单独的间隔探测（设置项 kimi_code_fingerprint_interval_seconds 默认 300 秒、
+moonshot_fingerprint_interval_seconds 默认 600 秒、deepseek_fingerprint_interval_seconds 默认 300 秒，填 0 关闭），
+探测结果写进对应模型对象，和其他字段一起参与对比。
 
 逐模型逐字段深比较，发现任何变化（新增 / 移除 / 字段修改 / 字段增删）
 即通过配置的 UMO 发送消息。快照持久化在插件数据目录，重启不丢。
@@ -22,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from datetime import datetime
 
 import aiohttp
@@ -38,6 +46,7 @@ from .watcher_core import (
     build_change_message,
     build_online_message,
     build_source_ready_message,
+    chat_completions_url,
     diff_models,
     diff_scene,
     models_url,
@@ -48,22 +57,38 @@ PLUGIN_NAME = "astrbot_plugin_kimi_watcher"
 SNAPSHOT_FILE = "snapshot.json"
 DEFAULT_KIMI_CODE_URL = "https://api.kimi.com/coding"
 DEFAULT_MOONSHOT_URL = "https://api.moonshot.cn/v1"
+DEFAULT_DEEPSEEK_URL = "https://api.deepseek.com"
+
+SOURCE_DEEPSEEK = "deepseek"
+DEEPSEEK_USER_AGENT = "astrbot-model-radar"
+# 额外数据源请求时使用的 User-Agent；没列出的沿用 Kimi 客户端的 UA
+SOURCE_USER_AGENTS = {SOURCE_DEEPSEEK: DEEPSEEK_USER_AGENT}
 
 # 额外数据源：(快照里的键, 通知里的展示名, 默认接口地址)
 EXTRA_SOURCE_DEFS = (
     ("kimi_code", "Kimi Code", DEFAULT_KIMI_CODE_URL),
     ("moonshot", "Moonshot 官方", DEFAULT_MOONSHOT_URL),
+    (SOURCE_DEEPSEEK, "DeepSeek 官方", DEFAULT_DEEPSEEK_URL),
 )
+
+# 后端指纹探测间隔（秒）的设置项与默认值，每个数据源各一项：
+# Kimi Code 5 分钟、Moonshot 10 分钟、DeepSeek 5 分钟；填 0 关闭，其他值最小 60
+FINGERPRINT_INTERVAL_SETTINGS = {
+    "kimi_code": ("kimi_code_fingerprint_interval_seconds", 300),
+    "moonshot": ("moonshot_fingerprint_interval_seconds", 600),
+    SOURCE_DEEPSEEK: ("deepseek_fingerprint_interval_seconds", 300),
+}
+MIN_FINGERPRINT_INTERVAL = 60
 
 # 连续失败多少次后提醒一次
 FAIL_NOTIFY_THRESHOLD = 10
 
-# 额外数据源（Kimi Code / Moonshot 官方）连续失败多少次后单独提醒一次
+# 额外数据源（Kimi Code / Moonshot 官方 / DeepSeek 官方）连续失败多少次后单独提醒一次
 SOURCE_FAIL_NOTIFY_THRESHOLD = 5
 
 
 class KimiWatcherPlugin(Star):
-    """Kimi 模型雷达插件。"""
+    """模型雷达插件（Kimi / DeepSeek）。"""
 
     def __init__(self, context: Context, config: dict | None = None) -> None:
         super().__init__(context)
@@ -71,6 +96,8 @@ class KimiWatcherPlugin(Star):
         self._task: asyncio.Task | None = None
         self._stopped = False
         self._data_dir = None
+        # 各数据源上次探测指纹的时间（time.monotonic），键为数据源键，各自独立计时
+        self._last_fingerprint_probe: dict = {}
         self._fail_count = 0
         self._fail_notified = False
         self._source_fail_counts: dict = {}
@@ -121,14 +148,14 @@ class KimiWatcherPlugin(Star):
                 if self._fail_count >= FAIL_NOTIFY_THRESHOLD and not self._fail_notified:
                     self._fail_notified = True
                     await self._notify(
-                        "注意：Kimi 模型雷达连续 %d 次拉取接口失败，"
+                        "注意：模型雷达连续 %d 次拉取接口失败，"
                         "可能是网络波动或接口变动。我会继续重试，恢复后另行通知。"
                         % FAIL_NOTIFY_THRESHOLD
                     )
             else:
                 if self._fail_notified:
                     self._fail_notified = False
-                    await self._notify("Kimi 模型雷达已恢复连接，继续监视。")
+                    await self._notify("模型雷达已恢复连接，继续监视。")
                 self._fail_count = 0
             await asyncio.sleep(self._interval())
 
@@ -174,12 +201,17 @@ class KimiWatcherPlugin(Star):
         return base_url, key
 
     async def _fetch_openai_models(
-        self, session: aiohttp.ClientSession, base_url: str, key: str, label: str
+        self,
+        session: aiohttp.ClientSession,
+        base_url: str,
+        key: str,
+        label: str,
+        user_agent: str = USER_AGENT,
     ) -> list:
         headers = {
             "authorization": "Bearer " + key,
             "accept": "application/json",
-            "user-agent": USER_AGENT,
+            "user-agent": user_agent,
         }
         url = models_url(base_url)
         timeout = aiohttp.ClientTimeout(total=20)
@@ -192,6 +224,135 @@ class KimiWatcherPlugin(Star):
             raise RuntimeError(f"{label} 返回空模型列表，本轮跳过")
         return models
 
+    def _fingerprint_interval(self, source: str) -> int:
+        """某数据源的指纹探测间隔（秒）：0 表示关闭，其他值不低于 MIN_FINGERPRINT_INTERVAL。"""
+        setting, default = FINGERPRINT_INTERVAL_SETTINGS[source]
+        try:
+            value = int(self.config.get(setting, default))
+        except (TypeError, ValueError):
+            value = default
+        if value <= 0:
+            return 0
+        return max(MIN_FINGERPRINT_INTERVAL, value)
+
+    async def _fetch_source_models(
+        self,
+        session: aiohttp.ClientSession,
+        source: str,
+        base_url: str,
+        key: str,
+        label: str,
+    ) -> list:
+        """额外数据源：模型列表每轮都拉（免费），后端指纹按单独间隔探测（花钱 / 占订阅额度）。"""
+        user_agent = SOURCE_USER_AGENTS.get(source, USER_AGENT)
+        models = await self._fetch_openai_models(
+            session, base_url, key, label, user_agent=user_agent
+        )
+        await self._attach_fingerprints(session, source, base_url, key, models, user_agent)
+        return models
+
+    async def _attach_fingerprints(
+        self,
+        session: aiohttp.ClientSession,
+        source: str,
+        base_url: str,
+        key: str,
+        models: list,
+        user_agent: str,
+    ) -> None:
+        """给每个模型补上 system_fingerprint 字段，让它和其他字段一起参与对比。
+
+        没到探测时间、探测失败或回复里没有该字段时，沿用上一轮快照里的值，
+        否则会被对比逻辑误判成「字段被删除」。新出现的模型不等间隔，立即探测一次。
+        """
+        interval = self._fingerprint_interval(source)
+        now = time.monotonic()
+        last = self._last_fingerprint_probe.get(source)
+        due = interval > 0 and (last is None or now - last >= interval)
+        old = (self._load_snapshot() or {}).get(source) or {}
+        old_by_id = {m.get("id"): m for m in old.get("models") or []}
+        for model in models:
+            model_id = model.get("id")
+            if not model_id:
+                continue
+            fingerprint = None
+            if interval > 0 and (due or model_id not in old_by_id):
+                try:
+                    fingerprint = await self._probe_fingerprint(
+                        session, base_url, key, model_id, user_agent
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(f"[KimiWatcher] {source} 指纹探测失败（{model_id}）: {exc}")
+            if not fingerprint:
+                fingerprint = (old_by_id.get(model_id) or {}).get("system_fingerprint")
+            if fingerprint:
+                model["system_fingerprint"] = fingerprint
+        if due:
+            self._last_fingerprint_probe[source] = now
+
+    async def _probe_fingerprint(
+        self,
+        session: aiohttp.ClientSession,
+        base_url: str,
+        key: str,
+        model_id: str,
+        user_agent: str,
+    ):
+        """发一条极小的流式聊天请求，读到第一段带 system_fingerprint 的内容就断开；读不到返回 None。
+
+        Kimi 只有流式回复才带该字段（非流式没有），DeepSeek 两种都带，所以统一走流式。
+        """
+        headers = {
+            "authorization": "Bearer " + key,
+            "content-type": "application/json",
+            "accept": "text/event-stream",
+            "user-agent": user_agent,
+        }
+        body = {
+            "model": model_id,
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 1,
+            "stream": True,
+        }
+        timeout = aiohttp.ClientTimeout(total=20)
+        async with session.post(
+            chat_completions_url(base_url), json=body, headers=headers, timeout=timeout
+        ) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"HTTP {resp.status}")
+            async for raw in resp.content:
+                line = raw.decode("utf-8", "ignore").strip()
+                if not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if payload == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(payload)
+                except ValueError:
+                    continue
+                fingerprint = chunk.get("system_fingerprint")
+                if fingerprint:
+                    return fingerprint
+        return None
+
+    @staticmethod
+    def _seed_fingerprints(old_models: list, new_models: list) -> bool:
+        """旧快照里还没有指纹的模型（升级前建的基线），把新探测到的指纹静默并入旧快照。
+
+        否则升级后的第一轮会把每个模型的指纹都报成「新增字段」。返回是否并入过，
+        并入过就需要保存一次快照，不然下次旧快照仍没有指纹，真正的指纹变化会被漏掉。
+        """
+        old_by_id = {m.get("id"): m for m in old_models}
+        seeded = False
+        for model in new_models:
+            old = old_by_id.get(model.get("id"))
+            fingerprint = model.get("system_fingerprint")
+            if old is not None and fingerprint and "system_fingerprint" not in old:
+                old["system_fingerprint"] = fingerprint
+                seeded = True
+        return seeded
+
     async def _check_once(self) -> None:
         async with aiohttp.ClientSession() as session:
             scenes_models = {}
@@ -203,8 +364,8 @@ class KimiWatcherPlugin(Star):
                 if not conf:
                     continue
                 try:
-                    fetched[key] = await self._fetch_openai_models(
-                        session, conf[0], conf[1], label
+                    fetched[key] = await self._fetch_source_models(
+                        session, key, conf[0], conf[1], label
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(f"[KimiWatcher] {label} 拉取失败（本轮跳过）: {exc}")
@@ -237,6 +398,7 @@ class KimiWatcherPlugin(Star):
 
         # 额外数据源：首次拉到先建立基线并通知；之后逐字段对比
         baseline_ready = []
+        seeded = False
         for key, label, _url in EXTRA_SOURCE_DEFS:
             new_models = fetched.get(key)
             if new_models is None:
@@ -245,11 +407,12 @@ class KimiWatcherPlugin(Star):
             if old_models is None:
                 baseline_ready.append((label, new_models))
             else:
+                seeded = self._seed_fingerprints(old_models, new_models) or seeded
                 diffs = diff_models(old_models, new_models)
                 if diffs:
                     changes[label] = diffs
 
-        if baseline_ready or changes:
+        if baseline_ready or changes or seeded:
             self._save_snapshot(scenes_models, fetched)
         for label, models in baseline_ready:
             await self._notify_change(build_source_ready_message(label, models))

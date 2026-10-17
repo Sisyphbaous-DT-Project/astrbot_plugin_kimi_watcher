@@ -73,6 +73,19 @@ FIELD_NAMES = {
     "organization": "组织",
     "group": "分组",
     "is_blocking": "是否阻断",
+    # DeepSeek 官方接口（api.deepseek.com/models）字段
+    "name": "名称",
+    "context_window": "上下文窗口",
+    "max_output_tokens": "最大输出",
+    "input_modalities": "输入类型",
+    "output_modalities": "输出类型",
+    "supported_levels": "支持档位",
+    "default_level": "默认档位",
+    "api_capabilities": "API 能力",
+    "anthropic_messages": "Anthropic 协议",
+    "system_prompt_update": "system 提示更新方式",
+    # 聊天回复里的后端指纹（由插件探测后写入模型对象，不在 /models 里）
+    "system_fingerprint": "后端指纹",
 }
 
 _MISSING = object()
@@ -100,12 +113,29 @@ def model_display_name(model):
     return model_key(model)
 
 
+def model_label(model):
+    """展示名；已探测到后端指纹的模型后面带上指纹，例如 K3（fpv0_57ea5778）。"""
+    name = model_display_name(model)
+    fingerprint = model.get("system_fingerprint")
+    if fingerprint:
+        return "%s（%s）" % (name, fingerprint)
+    return name
+
+
 def models_url(base_url):
     """拼模型列表地址：base_url 可能不带 /v1，也可能已经带上了。"""
     base = str(base_url or "").rstrip("/")
     if base.endswith("/v1"):
         return base + "/models"
     return base + "/v1/models"
+
+
+def chat_completions_url(base_url):
+    """拼聊天补全地址（指纹探测用），base_url 规则同 models_url。"""
+    base = str(base_url or "").rstrip("/")
+    if base.endswith("/v1"):
+        return base + "/chat/completions"
+    return base + "/v1/chat/completions"
 
 
 def flatten(obj, prefix=""):
@@ -309,7 +339,7 @@ def diff_scene(old_payload, new_payload):
 def build_change_message(changes_by_scene, now=None):
     """把各监测源的变化行合并成一条通知消息。"""
     now = now or datetime.now()
-    lines = ["Kimi 模型有新变化（%s）" % now.strftime("%m-%d %H:%M"), ""]
+    lines = ["模型有新变化（%s）" % now.strftime("%m-%d %H:%M"), ""]
     for label, diffs in changes_by_scene.items():
         lines.append(label + "：")
         lines.extend("  " + line for line in diffs)
@@ -325,9 +355,9 @@ def build_online_message(scenes_models, first, saved_at=None, now=None, extra_so
     now = now or datetime.now()
     parts = []
     if first:
-        parts.append("Kimi 模型雷达已上线（首次部署，已建立基线）")
+        parts.append("模型雷达已上线（首次部署，已建立基线）")
     else:
-        parts.append("Kimi 模型雷达已重载上线（基线完好，继续监视）")
+        parts.append("模型雷达已重载上线（基线完好，继续监视）")
     parts.append("")
     for scene, label in SCENES:
         models = scene_models(scenes_models.get(scene))
@@ -337,7 +367,7 @@ def build_online_message(scenes_models, first, saved_at=None, now=None, extra_so
         if models is None:
             parts.append("%s：未配置 Key 或暂无基线（跳过）" % label)
         else:
-            names = "、".join(model_display_name(m) for m in models) or "（空）"
+            names = "、".join(model_label(m) for m in models) or "（空）"
             parts.append("%s %d 个：%s" % (label, len(models), names))
     parts.append("")
     if not first and saved_at:

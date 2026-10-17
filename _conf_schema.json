@@ -14,8 +14,26 @@
   "interval_seconds": {
     "description": "检查间隔（秒）",
     "type": "int",
-    "hint": "默认 60 秒，最小 15 秒",
+    "hint": "默认 60 秒，最小 15 秒。只管模型列表的拉取（不花钱）；后端指纹的探测间隔见下一项",
     "default": 60
+  },
+  "kimi_code_fingerprint_interval_seconds": {
+    "description": "Kimi Code 后端指纹探测间隔（秒）",
+    "type": "int",
+    "hint": "后端指纹（system_fingerprint）要发一条极小的流式聊天请求才能读到，Kimi Code 会占一点订阅额度，所以和上面的检查间隔分开计时。默认 300 秒；最小 60；填 0 关闭 Kimi Code 的指纹探测（模型列表监测不受影响）",
+    "default": 300
+  },
+  "moonshot_fingerprint_interval_seconds": {
+    "description": "Moonshot 官方后端指纹探测间隔（秒）",
+    "type": "int",
+    "hint": "后端指纹要发一条极小的流式聊天请求才能读到，Moonshot 官方会产生少量费用，所以单独计时。默认 600 秒；最小 60；填 0 关闭 Moonshot 的指纹探测（模型列表监测不受影响）",
+    "default": 600
+  },
+  "deepseek_fingerprint_interval_seconds": {
+    "description": "DeepSeek 后端指纹探测间隔（秒）",
+    "type": "int",
+    "hint": "DeepSeek 的后端指纹同样要发一条极小的聊天请求才能读到，会产生少量费用，所以单独计时。默认 300 秒；最小 60；填 0 关闭 DeepSeek 的指纹探测（模型列表监测不受影响）",
+    "default": 300
   },
   "kimi_code_enable": {
     "description": "启用 Kimi Code 模型监测",
@@ -51,6 +69,24 @@
     "description": "Moonshot 官方 API Key（自己填）",
     "type": "string",
     "hint": "形如 sk-xxx；不填则跳过 Moonshot 官方监测",
+    "default": ""
+  },
+  "deepseek_enable": {
+    "description": "启用 DeepSeek 官方模型监测",
+    "type": "bool",
+    "hint": "开启并填写 Key 后，按上面的检查间隔拉取 DeepSeek 官方模型列表（不花钱）",
+    "default": true
+  },
+  "deepseek_base_url": {
+    "description": "DeepSeek 官方接口地址",
+    "type": "string",
+    "hint": "默认 https://api.deepseek.com",
+    "default": "https://api.deepseek.com"
+  },
+  "deepseek_key": {
+    "description": "DeepSeek 官方 API Key（自己填）",
+    "type": "string",
+    "hint": "形如 sk-xxx；不填则跳过 DeepSeek 官方监测",
     "default": ""
   }
 }
