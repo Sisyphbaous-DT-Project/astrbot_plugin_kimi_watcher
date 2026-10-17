@@ -18,6 +18,8 @@ moonshot_fingerprint_interval_seconds 默认 600 秒、deepseek_fingerprint_inte
 逐模型逐字段深比较，发现任何变化（新增 / 移除 / 字段修改 / 字段增删）
 即通过配置的 UMO 发送消息。快照持久化在插件数据目录，重启不丢。
 额外数据源连续失败达到阈值时会单独提醒，恢复后再通知一次，避免静默失明。
+指纹探测整轮全部失败连续达到阈值时同样单独提醒（比如 Kimi Code 订阅过期、列表能拉但聊天请求被拒），
+恢复后再通知一次。
 
 通知分两路：
 - 运维提醒（targets）：插件上线重载、数据源失败恢复等雷达自身状态
@@ -86,6 +88,9 @@ FAIL_NOTIFY_THRESHOLD = 10
 # 额外数据源（Kimi Code / Moonshot 官方 / DeepSeek 官方）连续失败多少次后单独提醒一次
 SOURCE_FAIL_NOTIFY_THRESHOLD = 5
 
+# 某数据源的指纹探测连续多少轮「全部失败」后提醒一次（一轮 = 到了探测时间、对每个模型各探测一次）
+PROBE_FAIL_NOTIFY_THRESHOLD = 3
+
 
 class KimiWatcherPlugin(Star):
     """模型雷达插件（Kimi / DeepSeek）。"""
@@ -102,6 +107,9 @@ class KimiWatcherPlugin(Star):
         self._fail_notified = False
         self._source_fail_counts: dict = {}
         self._source_fail_notified: dict = {}
+        # 指纹探测的连续失败轮数 / 是否已提醒，键为数据源键
+        self._probe_fail_counts: dict = {}
+        self._probe_fail_notified: dict = {}
 
     # ---------------- 生命周期 ----------------
 
@@ -248,7 +256,10 @@ class KimiWatcherPlugin(Star):
         models = await self._fetch_openai_models(
             session, base_url, key, label, user_agent=user_agent
         )
-        await self._attach_fingerprints(session, source, base_url, key, models, user_agent)
+        attempted, succeeded, last_error = await self._attach_fingerprints(
+            session, source, base_url, key, models, user_agent
+        )
+        await self._report_probe_result(source, label, attempted, succeeded, last_error)
         return models
 
     async def _attach_fingerprints(
@@ -259,11 +270,12 @@ class KimiWatcherPlugin(Star):
         key: str,
         models: list,
         user_agent: str,
-    ) -> None:
+    ) -> tuple:
         """给每个模型补上 system_fingerprint 字段，让它和其他字段一起参与对比。
 
         没到探测时间、探测失败或回复里没有该字段时，沿用上一轮快照里的值，
         否则会被对比逻辑误判成「字段被删除」。新出现的模型不等间隔，立即探测一次。
+        返回 (本轮发起的探测次数, 其中读到指纹的次数, 最近一次失败原因)。
         """
         interval = self._fingerprint_interval(source)
         now = time.monotonic()
@@ -271,24 +283,35 @@ class KimiWatcherPlugin(Star):
         due = interval > 0 and (last is None or now - last >= interval)
         old = (self._load_snapshot() or {}).get(source) or {}
         old_by_id = {m.get("id"): m for m in old.get("models") or []}
+        attempted = 0
+        succeeded = 0
+        last_error = ""
         for model in models:
             model_id = model.get("id")
             if not model_id:
                 continue
             fingerprint = None
             if interval > 0 and (due or model_id not in old_by_id):
+                attempted += 1
                 try:
                     fingerprint = await self._probe_fingerprint(
                         session, base_url, key, model_id, user_agent
                     )
                 except Exception as exc:  # noqa: BLE001
+                    last_error = str(exc) or type(exc).__name__
                     logger.warning(f"[KimiWatcher] {source} 指纹探测失败（{model_id}）: {exc}")
+                else:
+                    if not fingerprint:
+                        last_error = "回复里没有 system_fingerprint"
+                if fingerprint:
+                    succeeded += 1
             if not fingerprint:
                 fingerprint = (old_by_id.get(model_id) or {}).get("system_fingerprint")
             if fingerprint:
                 model["system_fingerprint"] = fingerprint
         if due:
             self._last_fingerprint_probe[source] = now
+        return attempted, succeeded, last_error
 
     async def _probe_fingerprint(
         self,
@@ -436,6 +459,35 @@ class KimiWatcherPlugin(Star):
             % (label, count, exc)
         )
         logger.warning("[KimiWatcher] %s 连续失败 %d 次，已通知", label, count)
+
+    async def _report_probe_result(
+        self, source: str, label: str, attempted: int, succeeded: int, last_error: str
+    ) -> None:
+        """指纹探测整轮全部失败连续到阈值时通知一次，恢复后再通知一次。
+
+        没发起探测的轮次（没到间隔、已关闭）不计入；一轮里只要有一个模型读到指纹就算成功，
+        个别模型读不到不提醒。模型列表照常拉取，所以这里失败只是指纹对比暂时失明，
+        沿用旧指纹不会误报。
+        """
+        if attempted == 0:
+            return
+        if succeeded > 0:
+            self._probe_fail_counts[source] = 0
+            if self._probe_fail_notified.pop(source, None):
+                await self._notify("%s 的后端指纹探测已恢复，继续监视。" % label)
+                logger.info("[KimiWatcher] %s 指纹探测已恢复", label)
+            return
+        count = self._probe_fail_counts.get(source, 0) + 1
+        self._probe_fail_counts[source] = count
+        if count < PROBE_FAIL_NOTIFY_THRESHOLD or self._probe_fail_notified.get(source):
+            return
+        self._probe_fail_notified[source] = True
+        await self._notify(
+            "注意：%s 的后端指纹探测连续 %d 轮全部失败（最近一次：%s）。\n"
+            "模型列表仍在正常监视，只是指纹对比暂时失明（沿用旧指纹，不会误报）；"
+            "恢复后我会另行通知。" % (label, count, last_error)
+        )
+        logger.warning("[KimiWatcher] %s 指纹探测连续 %d 轮全部失败，已通知", label, count)
 
     async def _report_source_recovered(self, key: str, label: str) -> None:
         """额外数据源恢复后，若之前发过失败通知则补发一条恢复通知。"""
