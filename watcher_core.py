@@ -22,6 +22,15 @@ SCENES = (
     (1, "Agent 菜单"),
 )
 
+# 场景响应里的两个模型列表：主列表与「更多模型」折叠入口（Kimi 安卓 3.1.4 起客户端支持，
+# 结构与主列表相同，服务端有模型要收进抽屉时才会返回）
+MAIN_LIST_FIELD = "availableModels"
+MORE_LIST_FIELD = "moreModels"
+# 比较时给每个模型临时打的「所在列表」标记，只存在于比较过程，不写入快照
+LIST_POSITION_FIELD = "所在列表"
+LIST_MAIN = "主列表"
+LIST_MORE = "更多模型"
+
 # 接口字段 -> 中文名（用于变化消息里更好读）
 FIELD_NAMES = {
     "displayName": "显示名",
@@ -47,6 +56,8 @@ FIELD_NAMES = {
     "available": "可用",
     "label": "标签",
     "greeting": "开场白",
+    "moonPhase": "月相",
+    "filePreset": "文件预设",
     # Kimi Code 接口（/v1/models）字段
     "id": "模型 ID",
     "display_name": "显示名",
@@ -111,6 +122,21 @@ def model_display_name(model):
         if value:
             return str(value)
     return model_key(model)
+
+
+def _position_note(model):
+    """模型在「更多模型」里时，新增/移除消息里补一句位置；其余情况为空。"""
+    if model.get(LIST_POSITION_FIELD) == LIST_MORE:
+        return "，在「%s」里" % LIST_MORE
+    return ""
+
+
+def scene_model_label(model):
+    """场景模型的展示名；收在「更多模型」里的后面标注出来。"""
+    name = model_display_name(model)
+    if model.get(LIST_POSITION_FIELD) == LIST_MORE:
+        return "%s（%s）" % (name, LIST_MORE)
+    return name
 
 
 def model_label(model):
@@ -286,11 +312,15 @@ def diff_models(old_models, new_models):
     for key, model in added:
         if key in paired_new:
             continue
-        lines.append("新增模型：%s（标识 %s）" % (model_display_name(model), key))
+        lines.append(
+            "新增模型：%s（标识 %s%s）" % (model_display_name(model), key, _position_note(model))
+        )
     for key, model in removed:
         if key in paired_old:
             continue
-        lines.append("移除模型：%s（标识 %s）" % (model_display_name(model), key))
+        lines.append(
+            "移除模型：%s（标识 %s%s）" % (model_display_name(model), key, _position_note(model))
+        )
 
     for key in new_by_key:
         if key not in old_by_key:
@@ -309,28 +339,38 @@ def diff_models(old_models, new_models):
 
 
 def scene_models(payload):
-    """从场景响应里取出模型列表；兼容旧版快照直接存模型列表的情况。"""
-    if isinstance(payload, dict):
-        return payload.get("availableModels") or []
-    return payload or []
+    """从场景响应里取出模型列表；兼容旧版快照直接存模型列表的情况。
+
+    主列表和「更多模型」合并成一份，并给每个模型临时打上所在列表的标记（返回的是副本，
+    不改动快照里的原始数据）。这样模型在两个列表间挪动会显示成字段变化，而不是移除 + 新增。
+    """
+    if not isinstance(payload, dict):
+        return payload or []
+    models = []
+    for field, position in ((MAIN_LIST_FIELD, LIST_MAIN), (MORE_LIST_FIELD, LIST_MORE)):
+        for model in payload.get(field) or []:
+            models.append({**model, LIST_POSITION_FIELD: position})
+    return models
 
 
 def diff_scene(old_payload, new_payload):
     """场景响应的完整比较：接口顶层全局配置 + 模型列表。
 
     顶层的 defaultScenario / defaultAgentModel / defaultChatModel 等全局字段
-    在 v1.6.0 之前不在监控范围内，现在一并对比。
+    在 v1.6.0 之前不在监控范围内，现在一并对比。两个模型列表（主列表、更多模型）
+    不算全局字段，统一交给 diff_models 按模型比较。
     """
     old_obj = (
         old_payload if isinstance(old_payload, dict)
-        else {"availableModels": scene_models(old_payload)}
+        else {MAIN_LIST_FIELD: scene_models(old_payload)}
     )
     new_obj = (
         new_payload if isinstance(new_payload, dict)
-        else {"availableModels": scene_models(new_payload)}
+        else {MAIN_LIST_FIELD: scene_models(new_payload)}
     )
-    old_meta = {k: v for k, v in old_obj.items() if k != "availableModels"}
-    new_meta = {k: v for k, v in new_obj.items() if k != "availableModels"}
+    model_lists = (MAIN_LIST_FIELD, MORE_LIST_FIELD)
+    old_meta = {k: v for k, v in old_obj.items() if k not in model_lists}
+    new_meta = {k: v for k, v in new_obj.items() if k not in model_lists}
     lines = list(_compare_fields(old_meta, new_meta, "接口"))
     lines.extend(diff_models(scene_models(old_obj), scene_models(new_obj)))
     return lines
@@ -361,7 +401,7 @@ def build_online_message(scenes_models, first, saved_at=None, now=None, extra_so
     parts.append("")
     for scene, label in SCENES:
         models = scene_models(scenes_models.get(scene))
-        names = "、".join(model_display_name(m) for m in models) or "（空）"
+        names = "、".join(scene_model_label(m) for m in models) or "（空）"
         parts.append("%s %d 个：%s" % (label, len(models), names))
     for label, models in (extra_sources or []):
         if models is None:

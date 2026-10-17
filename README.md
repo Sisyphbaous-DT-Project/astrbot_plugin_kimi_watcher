@@ -2,7 +2,7 @@
 
 每分钟监控模型列表的字段变化并推送通知，覆盖四个监测源：
 
-- kimi.com 模型菜单（GetAvailableModels 的 scene=0 主菜单 / scene=1 Agent 菜单）
+- kimi.com 模型菜单（GetAvailableModels 的 scene=0 主菜单 / scene=1 Agent 菜单，含菜单里「更多模型」折叠入口中的模型）
 - Kimi Code 模型列表（GET {base_url}/v1/models，需在配置中填写 API Key）
 - Moonshot 官方模型列表（GET https://api.moonshot.cn/v1/models，需在配置中填写 API Key）
 - DeepSeek 官方模型列表（GET https://api.deepseek.com/v1/models，需在配置中填写 API Key）
@@ -28,6 +28,7 @@
 - 后端指纹对应的是后端部署而不是模型名（实测 Moonshot 的 kimi-k3 与 Kimi Code 的 k3 / k3-256k 指纹相同）；指纹变化只代表后端配置有变动，不直接证明模型升级
 - 通知分两路：运维提醒（`targets`）发插件上线重载与数据源失败恢复，变化提醒（`change_targets`）发模型增删与字段变动，两者可指向不同会话；`change_targets` 留空时回落 `targets`
 - 场景响应的顶层全局字段（defaultScenario / defaultAgentModel / defaultChatModel 等）同样纳入对比
+- 菜单里的「更多模型」折叠入口（响应里的 `moreModels`，Kimi 安卓 3.1.4 起客户端支持，结构与主列表 `availableModels` 相同）与主列表合并后按模型比较：模型在主列表与「更多模型」之间挪动显示为 `所在列表` 的变化，不会误报成移除 + 新增；「更多模型」里新增 / 移除的模型会注明「在「更多模型」里」；上线通知里这类模型后面标注（更多模型）。截至 2026-10-17 服务端尚未返回该字段
 - 长文本字段变化采用"差异聚焦"显示，只展示变化附近的文字（超过 80 字符的文本会裁掉公共部分）
 - 模型标识变更（显示名不变）合并为字段变化：`Instant 的标识：k2d6 变为 k2d8`
 
@@ -52,6 +53,13 @@
 | `deepseek_key` | DeepSeek 官方 API Key（自己填，形如 `sk-xxx`）；不填则跳过 DeepSeek 官方监测 |
 
 ## 更新记录
+
+### v1.8.1 (2026-10-17)
+
+- 适配模型菜单的「更多模型」折叠入口（`moreModels`）：与主列表合并后按模型比较，模型在两个列表间挪动显示为「所在列表」变化；「更多模型」里新增 / 移除的模型会注明位置；此前 `moreModels` 一旦出现会被当成接口全局字段，显示成难读的 `moreModels[0].xxx`，且不会按模型报新增 / 移除
+- 「所在列表」标记只在比较时临时加到模型副本上，不写入快照；没有 `moreModels` 时输出与 v1.8.0 完全一致，升级后首轮检查不会误报
+- 上线通知里，收在「更多模型」里的模型后面标注（更多模型），数量包含这部分模型
+- 新增字段中文名：`moonPhase`（月相）、`filePreset`（文件预设）
 
 ### v1.8.0 (2026-10-17)
 
@@ -908,6 +916,37 @@
 - deepseek-v4-pro 的输出类型[0]：text 变为 text（改）
 - deepseek-v4-pro 的归属方：deepseek 变为 deepseek（改）
 - deepseek-v4-pro 的后端指纹：a307abda487cd1b463329ccb945ce396 变为 a307abda487cd1b463329ccb945ce396（改）
+
+### 五、「更多模型」折叠入口（v1.8.1）
+
+Kimi 安卓 3.1.4 起，模型菜单接口的响应里除了主列表 `availableModels`，还可以带一个 `moreModels`（收在「更多模型」折叠入口里的模型，结构与主列表相同）。截至 2026-10-17 服务端还没有返回该字段，下面的样例由真实接口数据加上模拟的 `moreModels` 生成。
+
+- 抽屉里新增模型：
+
+  新增模型：K3.1 Preview（标识 k31-preview，在「更多模型」里）
+
+- 已有模型被收进「更多模型」：
+
+  字段变化：
+    K2.8 的所在列表：主列表 变为 更多模型
+
+- 模型从「更多模型」挪回主列表：
+
+  字段变化：
+    K2.8 的所在列表：更多模型 变为 主列表
+
+- 「更多模型」里的模型被移除：
+
+  移除模型：K3.1 Preview（标识 k31-preview，在「更多模型」里）
+
+- 「更多模型」里的模型新增月相 / 文件预设字段：
+
+  K3.1 Preview 新增字段 月相，值：MOON_PHASE_FULL
+  K3.1 Preview 新增字段 文件预设，值：PRESET_ASR
+
+- 上线通知：
+
+  主菜单 4 个：K3、K2.8、Instant、K3.1 Preview（更多模型）
 
 ## 备注
 
